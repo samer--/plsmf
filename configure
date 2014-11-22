@@ -1,0 +1,21 @@
+#!/bin/bash
+OS=$(uname)
+SMFROOT=
+
+if [ $OS == Darwin ] ; then
+	LIB=$(mdfind -name libsmf.a)
+fi
+
+if [ -z $LIB -a -x locate ] ; then
+	LIB=$(locate libsmf.a)
+fi
+
+if [ -z $LIB ] ; then
+	echo "Could not find libsmf.a; defaulting SMFROOT to /usr/local"
+	SMFROOT=/usr/local
+else
+	SMFROOT=$(dirname $(dirname $LIB))
+	echo "libsmf.a found in $LIB, setting SMFROOT to $SMFROOT"
+fi
+
+sed -e "s;<SMFROOT>;$SMFROOT;" < Makefile.in > Makefile
