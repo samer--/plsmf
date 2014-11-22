@@ -14,7 +14,7 @@ MIDI files (SMFs) using libsmf.
 - glib-2.0 ( probably installable using your system's package manager )
 
 
-#INSTALLATION
+##INSTALLATION
 
 The Makefile uses pkg-config to find glib, which seems to work fine on Debian
 and probably other Linux distributions, and on Mac OS X with Macports.
@@ -30,7 +30,7 @@ able to install this package from the SWI Prolog command line using
 	?- pack_install(plsmf).
 
 
-#CHANGE LOG
+##CHANGE LOG
 
 v0.1   - 	initial release.
 v0.2.0 - 	initial pack version.
