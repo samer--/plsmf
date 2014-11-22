@@ -85,13 +85,11 @@ static int io_error(const char *file, const char *action)
 { 
 	term_t ex = PL_new_term_ref();
 
-  PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
+	return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
 		      PL_FUNCTOR_CHARS, "smf_error", 2,
 		        PL_CHARS, file,
 		        PL_CHARS, action,
-		      PL_VARIABLE);
-
-  return PL_raise_exception(ex);
+		      PL_VARIABLE) && PL_raise_exception(ex);
 }
 
 	
@@ -100,13 +98,11 @@ static int type_error(term_t actual, const char *expected)
 { 
 	term_t ex = PL_new_term_ref();
 
-  PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
+  return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
 		      PL_FUNCTOR_CHARS, "type_error", 2,
 		        PL_CHARS, expected,
 		        PL_TERM, actual,
-		      PL_VARIABLE);
-
-  return PL_raise_exception(ex);
+		      PL_VARIABLE) && PL_raise_exception(ex);
 }
 
 static int unify_smf(term_t smf,smf_blob_t *p) {
@@ -170,12 +166,15 @@ static int read_events_until(smf_t *smf, double t, term_t events)
 			int i;
 
 
-			for (i=0; i<size; i++) PL_put_integer(data0+i+1,ev->midi_buffer[i]);
-			PL_put_float(data0,ev->time_seconds);
-			PL_cons_functor_v(midi,f_midi[size],data0);
-
-			if (!PL_unify_list(events,head,tail)) PL_fail;
-			if (!PL_unify(head,midi)) PL_fail;
+			for (i=0; i<size; i++) {
+				if (!PL_put_integer(data0+i+1,ev->midi_buffer[i])) PL_fail;
+			}
+			if (  !PL_put_float(data0,ev->time_seconds)
+				|| !PL_cons_functor_v(midi,f_midi[size],data0)
+				|| !PL_unify_list(events,head,tail)
+				|| !PL_unify(head,midi)) {
+				PL_fail;
+			}
 
 			events=tail;
 		}
