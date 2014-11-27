@@ -12,7 +12,7 @@ all:	$(SOBJ)
 $(SOBJ): c/$(TARGET).o
 	mkdir -p $(PACKSODIR)
 	$(LD) $(LDSOFLAGS) -o $@ $(SWISOLIB) $< $(LIBS)
-	# strip -x $@
+	strip -x $@
 
 check::
 install::
