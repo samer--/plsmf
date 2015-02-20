@@ -6,7 +6,7 @@ if [ $OS == Darwin ] ; then
 	LIB=$(mdfind -name libsmf.a)
 fi
 
-if [ -z $LIB -a -x locate ] ; then
+if [ -z $LIB ] && hash locate ; then
 	LIB=$(locate libsmf.a)
 fi
 
