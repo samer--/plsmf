@@ -37,11 +37,14 @@ static functor_t f_midi[4];
 install_t install();
 
 foreign_t open_read( term_t filename, term_t smf); 
+foreign_t write_smf( term_t smf, term_t filename); 
+foreign_t new_smf( term_t smf); 
 foreign_t is_smf( term_t conn); 
 foreign_t get_description( term_t smf, term_t desc);
 foreign_t get_duration( term_t smf, term_t dur);
 foreign_t get_events( term_t smf, term_t events);
 foreign_t get_events_between( term_t smf, term_t t1, term_t t2, term_t events);
+foreign_t add_events( term_t smf, term_t events);
 
 int smf_release(atom_t a)
 {
@@ -59,11 +62,14 @@ int smf_release(atom_t a)
 
 install_t install() 
 { 
+	PL_register_foreign("smf_new",  1, (void *)new_smf, 0);
 	PL_register_foreign("smf_read",  2, (void *)open_read, 0);
+	PL_register_foreign("smf_write",  2, (void *)write_smf, 0);
 	PL_register_foreign("smf_description", 2, (void *)get_description, 0);
 	PL_register_foreign("smf_duration", 2, (void *)get_duration, 0);
 	PL_register_foreign("smf_events", 2, (void *)get_events, 0);
 	PL_register_foreign("smf_events_between", 4, (void *)get_events_between, 0);
+	PL_register_foreign("smf_add_events", 2, (void *)add_events, 0);
 	PL_register_foreign("is_smf",  1, (void *)is_smf, 0);
 
 	{
@@ -85,13 +91,24 @@ static int io_error(const char *file, const char *action)
 { 
 	term_t ex = PL_new_term_ref();
 
-	return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
-		      PL_FUNCTOR_CHARS, "smf_error", 2,
-		        PL_CHARS, file,
-		        PL_CHARS, action,
-		      PL_VARIABLE) && PL_raise_exception(ex);
+  return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
+								PL_FUNCTOR_CHARS, "smf_error", 2,
+								  PL_CHARS, file,
+								  PL_CHARS, action,
+								PL_VARIABLE)
+      && PL_raise_exception(ex);
 }
 
+static int smf_error(const char *msg)
+{ 
+	term_t ex = PL_new_term_ref();
+
+  return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
+								PL_FUNCTOR_CHARS, "smf_error", 1,
+								  PL_CHARS, msg,
+								PL_VARIABLE)
+	   && PL_raise_exception(ex);
+}
 	
 // throws a Prolog exception to signal type error
 static int type_error(term_t actual, const char *expected)
@@ -99,10 +116,20 @@ static int type_error(term_t actual, const char *expected)
 	term_t ex = PL_new_term_ref();
 
   return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
-		      PL_FUNCTOR_CHARS, "type_error", 2,
-		        PL_CHARS, expected,
-		        PL_TERM, actual,
-		      PL_VARIABLE) && PL_raise_exception(ex);
+								PL_FUNCTOR_CHARS, "type_error", 2,
+								  PL_CHARS, expected,
+								  PL_TERM, actual,
+								PL_VARIABLE)
+	   && PL_raise_exception(ex);
+}
+
+// get an unsigned byte from a numeric atom
+static int get_byte(term_t msg, unsigned char *m)
+{
+   int x;
+   if (!PL_get_integer(msg,&x) || x<0 || x>255) return type_error(msg,"uint8");
+   *m = x;
+   return TRUE;
 }
 
 static int unify_smf(term_t smf,smf_blob_t *p) {
@@ -165,16 +192,15 @@ static int read_events_until(smf_t *smf, double t, term_t events)
 			term_t tail=PL_new_term_ref();
 			int i;
 
-
-			for (i=0; i<size; i++) {
-				if (!PL_put_integer(data0+i+1,ev->midi_buffer[i])) PL_fail;
-			}
-			if (  !PL_put_float(data0,ev->time_seconds)
-				|| !PL_cons_functor_v(midi,f_midi[size],data0)
-				|| !PL_unify_list(events,head,tail)
-				|| !PL_unify(head,midi)) {
-				PL_fail;
-			}
+         for (i=0; i<size; i++) {
+            if (!PL_put_integer(data0+i+1,ev->midi_buffer[i])) PL_fail;
+         }
+         if (  !PL_put_float(data0,ev->time_seconds)
+            || !PL_cons_functor_v(midi,f_midi[size],data0)
+            || !PL_unify_list(events,head,tail)
+            || !PL_unify(head,midi)) {
+            PL_fail;
+         }
 
 			events=tail;
 		}
@@ -182,8 +208,43 @@ static int read_events_until(smf_t *smf, double t, term_t events)
 	return PL_unify_nil(events);
 }
 
+static int add_events_to_track(term_t events, smf_track_t *track)
+{
+	term_t head=PL_new_term_ref();
+	unsigned char msg, arg1, arg2;
+	double time;
+	
+	events = PL_copy_term_ref(events);
+	while (PL_get_list(events,head,events)) {
+      atom_t name;
+      int    arity;
+
+      if (PL_get_name_arity(head,&name,&arity) && arity==4 && !strcmp(PL_atom_chars(name),"midi")) {
+			term_t args=PL_new_term_refs(4);
+
+			if (   PL_get_arg(1,head,args+0) && PL_get_float(args+0,&time)
+             && PL_get_arg(2,head,args+1) && get_byte(args+1,&msg)
+             && PL_get_arg(3,head,args+2) && get_byte(args+2,&arg1)
+             && PL_get_arg(4,head,args+3) && get_byte(args+3,&arg2) ) {
+				smf_event_t *event=smf_event_new_from_bytes(msg,arg1,arg2);
+				if (event==NULL) return smf_error("smf_event_new_from_bytes");
+				smf_track_add_event_seconds(track,event,time);
+			} else return smf_error("midi event");
+		} else return type_error(head,"midi/4");
+	}
+	return TRUE;
+}
 
 // ------- Foreign interface predicates
+
+foreign_t new_smf(term_t smf) 
+{ 
+	smf_blob_t	smfb;
+
+	smfb.smf = smf_new();
+	if (smfb.smf) return unify_smf(smf,&smfb);
+	else return smf_error("smf_new"); 
+}
 
 foreign_t open_read(term_t filename, term_t smf) 
 { 
@@ -191,11 +252,20 @@ foreign_t open_read(term_t filename, term_t smf)
 	smf_blob_t	smfb;
 
 	if (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING)) {
-		printf("opening MIDI file '%s'...\n",fn);
 		smfb.smf = smf_load(fn);
 		if (smfb.smf) return unify_smf(smf,&smfb);
 		else return io_error(fn,"read"); 
-	} else return type_error(filename,"atom");
+	} else return type_error(filename,"text");
+}
+
+foreign_t write_smf(term_t smf, term_t filename) 
+{ 
+	char 			*fn;
+	smf_blob_t	s;
+
+	return (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING) || type_error(filename,"text"))
+       && get_smf(smf,&s)
+		 && (smf_save(s.smf,fn) ? io_error(fn,"write") : TRUE);
 }
 
 foreign_t get_description( term_t smf, term_t desc)
@@ -222,7 +292,6 @@ foreign_t get_events( term_t smf, term_t events)
 	if (!get_smf(smf,&s)) return FALSE;
 	smf_rewind(s.smf);
 	return read_events_until(s.smf,smf_get_length_seconds(s.smf),events);
-
 }
 
 foreign_t get_events_between( term_t smf, term_t start, term_t end, term_t events)
@@ -233,8 +302,20 @@ foreign_t get_events_between( term_t smf, term_t start, term_t end, term_t event
 		return FALSE;
 
 	int rc=smf_seek_to_seconds(s.smf,t1);
-	printf("seek, rc=%d.\n",rc);
+	// printf("seek, rc=%d.\n",rc);
 	return read_events_until(s.smf,t2,events);
+}
+
+foreign_t add_events( term_t smf, term_t events)
+{
+	smf_blob_t	s;
+	smf_track_t *track;
+
+	if (!get_smf(smf,&s)) return FALSE;
+	track = smf_track_new();
+	if (track==NULL) return smf_error("smf_track_new");
+	smf_add_track(s.smf,track);
+	return add_events_to_track(events,track);
 }
 
 foreign_t is_smf(term_t conn) 
