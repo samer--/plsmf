@@ -219,7 +219,7 @@ static int add_events_to_track(term_t events, smf_track_t *track)
       atom_t name;
       int    arity;
 
-      if (PL_get_name_arity(head,&name,&arity) && arity==4 && !strcmp(PL_atom_chars(name),"midi")) {
+      if (PL_get_name_arity(head,&name,&arity) && arity==4 && !strcmp(PL_atom_chars(name),"smf")) {
 			term_t args=PL_new_term_refs(4);
 
 			if (   PL_get_arg(1,head,args+0) && PL_get_float(args+0,&time)

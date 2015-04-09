@@ -4,7 +4,9 @@
 */
 	  
 :- module(plsmf,
-	[	smf_read/2		
+	[	smf_new/1
+   ,  smf_read/2		
+   ,  smf_write/2
 	,	smf_description/2
 	,	smf_duration/2
 	,	smf_events/2
