@@ -11,6 +11,7 @@
 	,	smf_duration/2
 	,	smf_events/2
 	,	smf_events_between/4
+   ,  smf_add_events/2
 	,	is_smf/1	
 	]).
 	
