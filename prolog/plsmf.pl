@@ -1,7 +1,18 @@
 /*
- * Prolog part of standard MIDI file reading library
- * Samer Abdallah (2009)
-*/
+ *  Prolog part of plsmf: standard MIDI file reading library
+ *
+ *  Copyright (C) 2009-2015 Samer Abdallah (Queen Mary University of London; UCL)
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ */
 	  
 :- module(plsmf,
 	[	smf_new/1

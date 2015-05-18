@@ -1,7 +1,7 @@
 /*
  *  plsmf - Standard MIDI file reading and writing for SWI Prolog
  *
- *  Copyright (C) 2010 Samer Abdallah
+ *  Copyright (C) 2009-2015 Samer Abdallah (Queen Mary University of London; UCL)
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
