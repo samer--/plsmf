@@ -16,6 +16,7 @@
 	  
 :- module(plsmf,
 	[	smf_new/1
+   ,  smf_delete/1
    ,  smf_read/2		
    ,  smf_write/2
 	,	smf_description/2

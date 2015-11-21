@@ -42,6 +42,7 @@ install_t install();
 foreign_t open_read( term_t filename, term_t smf); 
 foreign_t write_smf( term_t smf, term_t filename); 
 foreign_t new_smf( term_t smf); 
+foreign_t delete_smf( term_t smf); 
 foreign_t is_smf( term_t conn); 
 foreign_t get_info( term_t smf, term_t key, term_t val);
 foreign_t get_description( term_t smf, term_t desc);
@@ -55,16 +56,17 @@ int smf_release(atom_t a)
 {
 	PL_blob_t *type;
 	size_t    len;
-	void *p;
+	smf_blob_t *p;
 
-	p=PL_blob_data(a,&len,&type);
-	if (p) smf_delete(((smf_blob_t *)p)->smf);
+	p=(smf_blob_t *)PL_blob_data(a,&len,&type);
+	if (p && p->smf) smf_delete(p->smf);
 	return TRUE;
 }
 
 install_t install() 
 { 
 	PL_register_foreign("smf_new",  1, (void *)new_smf, 0);
+	PL_register_foreign("smf_delete", 1, (void *)delete_smf, 0);
 	PL_register_foreign("smf_read",  2, (void *)open_read, 0);
 	PL_register_foreign("smf_write",  2, (void *)write_smf, 0);
 	PL_register_foreign("smf_info", 3, (void *)get_info, 0);
@@ -363,6 +365,19 @@ foreign_t new_smf(term_t smf)
 	smfb.smf = smf_new();
 	if (smfb.smf) return unify_smf(smf,&smfb);
 	else return smf_error("smf_new"); 
+}
+
+foreign_t delete_smf(term_t smf) 
+{ 
+	PL_blob_t *type;
+	size_t    len;
+	smf_blob_t *p1;
+  
+	PL_get_blob(smf, (void **)&p1, &len, &type);
+	if (type != &smf_blob) { return type_error(smf, "smf_blob"); }
+	smf_delete(p1->smf);
+	p1->smf=0;
+	return TRUE;
 }
 
 foreign_t open_read(term_t filename, term_t smf) 
