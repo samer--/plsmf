@@ -29,8 +29,11 @@ typedef struct smf_blob {
 } smf_blob_t;
 
 static PL_blob_t smf_blob;
-static functor_t f_midi[4];
+static functor_t f_midi[5], f_tempo;
+static atom_t a_physical, a_metrical;
 
+#define TL_METRICAL 0
+#define TL_PHYSICAL 1
 
 // --------------------------   Prolog boilerplate
 
@@ -40,11 +43,13 @@ foreign_t open_read( term_t filename, term_t smf);
 foreign_t write_smf( term_t smf, term_t filename); 
 foreign_t new_smf( term_t smf); 
 foreign_t is_smf( term_t conn); 
+foreign_t get_info( term_t smf, term_t key, term_t val);
 foreign_t get_description( term_t smf, term_t desc);
-foreign_t get_duration( term_t smf, term_t dur);
-foreign_t get_events( term_t smf, term_t events);
-foreign_t get_events_between( term_t smf, term_t t1, term_t t2, term_t events);
+foreign_t get_duration( term_t smf, term_t timeline, term_t dur);
+foreign_t get_events_with_track( term_t smf, term_t trackno, term_t timeline, term_t t1, term_t t2, term_t events);
+foreign_t get_events_without_track( term_t smf, term_t trackno, term_t timeline, term_t t1, term_t t2, term_t events);
 foreign_t add_events( term_t smf, term_t events);
+foreign_t get_tempo( term_t smf, term_t timeline, term_t time, term_t tempo);
 
 int smf_release(atom_t a)
 {
@@ -53,10 +58,7 @@ int smf_release(atom_t a)
 	void *p;
 
 	p=PL_blob_data(a,&len,&type);
-	if (p) {
-		// printf("Releasing MIDI file %p.\n",p);
-		smf_delete(((smf_blob_t *)p)->smf);
-	}
+	if (p) smf_delete(((smf_blob_t *)p)->smf);
 	return TRUE;
 }
 
@@ -65,17 +67,24 @@ install_t install()
 	PL_register_foreign("smf_new",  1, (void *)new_smf, 0);
 	PL_register_foreign("smf_read",  2, (void *)open_read, 0);
 	PL_register_foreign("smf_write",  2, (void *)write_smf, 0);
+	PL_register_foreign("smf_info", 3, (void *)get_info, 0);
 	PL_register_foreign("smf_description", 2, (void *)get_description, 0);
-	PL_register_foreign("smf_duration", 2, (void *)get_duration, 0);
-	PL_register_foreign("smf_events", 2, (void *)get_events, 0);
-	PL_register_foreign("smf_events_between", 4, (void *)get_events_between, 0);
+	PL_register_foreign("smf_duration", 3, (void *)get_duration, 0);
+	PL_register_foreign("smf_events_with_track", 6, (void *)get_events_with_track, 0);
+	PL_register_foreign("smf_events_without_track", 6, (void *)get_events_without_track, 0);
 	PL_register_foreign("smf_add_events", 2, (void *)add_events, 0);
+	PL_register_foreign("smf_tempo", 4, (void *)get_tempo, 0);
 	PL_register_foreign("is_smf",  1, (void *)is_smf, 0);
+
+	a_physical = PL_new_atom("physical");
+	a_metrical = PL_new_atom("metrical");
 
 	{
 		atom_t a_midi = PL_new_atom("smf");
+		atom_t a_tempo = PL_new_atom("smf_tempo");
 		int i;
-		for (i=0; i<4; i++) f_midi[i] = PL_new_functor(a_midi,i+1);
+		for (i=0; i<5; i++) f_midi[i] = PL_new_functor(a_midi,1+i);
+		f_tempo = PL_new_functor(a_tempo,7);
 	}
 
 	smf_blob.magic = PL_BLOB_MAGIC;
@@ -147,63 +156,165 @@ static int get_smf(term_t smf, smf_blob_t *p)
 	else { *p=*p1; return TRUE; }
 } 
 
-int chomp(const unsigned char status, unsigned short *ok, unsigned short *size) 
+int chomp(const unsigned char status, unsigned short *size) 
 {
 	// We are expecting that the next byte in the packet is a status byte.
-	if ( !(status & 0x80) ) return 1; // abort this packet
+	if (!(status & 0x80)) {*size=0; return 1;} // abort this packet
 
-	*ok=1; // default is to transmit message
 	// Determine the number of bytes in the MIDI message.
 	if      (status<0xC0) *size=3; 
 	else if (status<0xE0) *size=2;
 	else if (status<0xF0) *size=3;
 	else {
 		switch (status) {
-			case 0xF0: return 1; // sys ex: abort packet
-			case 0xF1: *size=3; *ok=0; break; // time code: ignore
+			case 0xF0: *size=0; return 1; // sys ex: ignore
+			case 0xF1: *size=3; return 1; // time code: ignore
 			case 0xF2: *size=3; break;
 			case 0xF3: *size=2; break;
-			case 0xF8: *size=3; *ok=0; break; // timing tick: ignore
-			case 0xFE: *size=1; *ok=0; break; // active sensing: ingore
+			case 0xF8: *size=3; return 1; // timing tick: ignore
+			case 0xFE: *size=1; return 1; // active sensing: ingore
 			default:   *size=1; 
 		}
 	}
-	return 0;
+	return 0; // don't ignore this packet
 }
 
+// -------------------------------------------------------------------------------------------
 
-static int read_events_until(smf_t *smf, double t, term_t events)
+
+typedef struct event_source {
+	smf_event_t *(*next)(struct event_source *);
+	union { smf_t *smf; smf_track_t *track; } src;
+} event_source_t;
+
+smf_event_t *smf_next_event(event_source_t *src) { 
+	return smf_get_next_event(src->src.smf);
+}
+
+smf_event_t *track_next_event(event_source_t *src) { 
+	return smf_track_get_next_event(src->src.track);
+}
+
+typedef int (*put_time_t)(smf_event_t *, term_t);
+typedef int (*unify_event_t)(put_time_t, smf_event_t *, unsigned short, term_t);
+
+typedef union midi_time {
+	double seconds;
+	int   pulses;
+} midi_time_t;
+
+typedef struct time_spec {
+	int (*test_time)(struct time_spec *me, smf_event_t *ev);
+	put_time_t put_time;
+	midi_time_t tmax;
+} time_spec_t;
+
+typedef int (*init_ts_t)(smf_t *, term_t, term_t, time_spec_t *);
+
+// -- time in seconds ------------------------
+static int no_test_time(time_spec_t *me, smf_event_t *ev) { return FALSE; }
+
+static int test_time_seconds(time_spec_t *me, smf_event_t *ev) {
+	return (ev->time_seconds > me->tmax.seconds);
+}
+
+static int put_time_seconds(smf_event_t *ev, term_t t) {
+	return PL_put_float(t,ev->time_seconds);
+}
+
+static int physical_time_spec(smf_t *smf, term_t tmin, term_t tmax, time_spec_t *ts) {
+	double t1, t2;
+
+	if (!PL_get_float_ex(tmin,&t1) || !PL_get_float_ex(tmax,&t2)) return FALSE;
+	if (t1>0.0) { if (smf_seek_to_seconds(smf,t1)) return FALSE; } else { smf_rewind(smf); }
+	if (t2<0.0) {
+		ts->test_time = no_test_time;
+	} else {
+		ts->test_time = test_time_seconds;
+		ts->tmax.seconds = t2;
+	}
+	ts->put_time = put_time_seconds;
+	return TRUE;
+}
+
+// -- time in pulses ------------------------
+static int test_time_pulses(time_spec_t *me, smf_event_t *ev) {
+	return (ev->time_pulses > me->tmax.pulses);
+}
+
+static int put_time_pulses(smf_event_t *ev, term_t t) {
+	return PL_put_integer(t,ev->time_pulses);
+}
+
+static int metrical_time_spec(smf_t *smf, term_t tmin, term_t tmax, time_spec_t *ts) {
+	int t1, t2;
+
+	if (!PL_get_integer_ex(tmin,&t1) || !PL_get_integer_ex(tmax,&t2)) return FALSE;
+	if (t1>0) { if (smf_seek_to_pulses(smf,t1)) return FALSE; } else smf_rewind(smf);
+	if (t2<0) {
+		ts->test_time = no_test_time;
+	} else {
+		ts->test_time = test_time_pulses;
+		ts->tmax.pulses = t2;
+	}
+	ts->put_time = put_time_pulses;
+	return TRUE;
+}
+
+static int unify_event_without_track(put_time_t put_time, smf_event_t *ev, unsigned short size, term_t event)
 {
-	term_t midi=PL_new_term_ref();
+	term_t data0=PL_new_term_refs(1+size);
+	int i;
+
+	for (i=0; i<size; i++) {
+		if (!PL_put_integer(data0+i+1,ev->midi_buffer[i])) return FALSE;
+	}
+	return put_time(ev,data0)
+		 && PL_cons_functor_v(event,f_midi[size],data0);
+}
+
+static int unify_event_with_track(put_time_t put_time, smf_event_t *ev, unsigned short size, term_t event)
+{
+	term_t data0=PL_new_term_refs(2+size);
+	int i;
+
+	for (i=0; i<size; i++) {
+		if (!PL_put_integer(data0+i+2,ev->midi_buffer[i])) return FALSE;
+	}
+	return put_time(ev,data0)
+ 	 	 && PL_put_integer(data0+1,ev->track_number)
+		 && PL_cons_functor_v(event,f_midi[1+size],data0);
+}
+
+static int read_events(event_source_t *src, unify_event_t unify_event, time_spec_t *ts, term_t events)
+{
+	/* term_t event=PL_new_term_ref(); */
 	smf_event_t	*ev;
+	term_t head = PL_new_term_ref();
+	term_t event = PL_new_term_ref();
 
 	events=PL_copy_term_ref(events);
-	while ((ev=smf_get_next_event(smf)) != NULL) {
-		unsigned short size;
-		unsigned short transmit;
+	while ((ev=src->next(src)) != NULL) {
 
 		if (smf_event_is_metadata(ev)) continue; 
-		if (ev->time_seconds>t) break;
-		if (chomp(ev->midi_buffer[0],&transmit,&size)) continue;
+		if (ts->test_time(ts,ev)) break;
 
-		if (transmit) {
-			term_t data0=PL_new_term_refs(1+size);
-			term_t head=PL_new_term_ref();
-			term_t tail=PL_new_term_ref();
-			int i;
+		unsigned short size;
+		if (chomp(ev->midi_buffer[0],&size)) continue;
 
-         for (i=0; i<size; i++) {
-            if (!PL_put_integer(data0+i+1,ev->midi_buffer[i])) PL_fail;
-         }
-         if (  !PL_put_float(data0,ev->time_seconds)
-            || !PL_cons_functor_v(midi,f_midi[size],data0)
-            || !PL_unify_list(events,head,tail)
-            || !PL_unify(head,midi)) {
-            PL_fail;
-         }
+		/* term_t data0=PL_new_term_refs(2+size); */
+		/* term_t tail=PL_new_term_ref(); */
+		int i;
 
-			events=tail;
-		}
+		if (	!unify_event(ts->put_time, ev, size, event)
+			||	!PL_unify_list(events,head,events) 
+			|| !PL_unify(head,event)
+			) return FALSE;
+		/* if (  unify_event(ts->put_time, ev, size, head) */
+		/* 		&& PL_unify_list(events,head,events)) { */
+		/* 		/1* && PL_unify(head,event)) { *1/ */ 
+		/* 	events=tail; */ 
+		/* } else return FALSE; */
 	}
 	return PL_unify_nil(events);
 }
@@ -235,6 +346,14 @@ static int add_events_to_track(term_t events, smf_track_t *track)
 	return TRUE;
 }
 
+static int get_timeline(term_t timeline, int *x) {
+	atom_t tl;
+	if (!PL_get_atom_ex(timeline,&tl)) return FALSE;
+	if (tl==a_physical)      *x = TL_PHYSICAL;
+	else if (tl==a_metrical) *x = TL_METRICAL;
+	else                     return PL_domain_error("metrical or physical",timeline);
+	return TRUE;
+}
 // ------- Foreign interface predicates
 
 foreign_t new_smf(term_t smf) 
@@ -274,36 +393,104 @@ foreign_t get_description( term_t smf, term_t desc)
 	
 	if (get_smf(smf,&s)) {
 		char 	*d=smf_decode(s.smf);
-		if (d) return PL_unify_atom_chars(desc,d);
-		else return PL_unify_atom_chars(desc,"<no description>");
+		if (d) {
+			int rc=PL_unify_atom_chars(desc,d);
+			free(d);
+			return rc;
+		} else return FALSE;
 	} return FALSE;
 }
 
-foreign_t get_duration( term_t smf, term_t dur)
+foreign_t get_info(term_t smf, term_t key, term_t val)
 {
-	smf_blob_t	s;
-	return get_smf(smf,&s) && PL_unify_float(dur,smf_get_length_seconds(s.smf));
+	smf_blob_t s;
+	char *k;
+	int  v;
+	if (!get_smf(smf,&s) || !PL_get_atom_chars(key, &k)) return FALSE;
+	if      (!strcmp(k,"ppqn"))       v=s.smf->ppqn;
+	else if (!strcmp(k,"fps"))        v=s.smf->frames_per_second;
+	else if (!strcmp(k,"tracks"))     v=s.smf->number_of_tracks;
+	else if (!strcmp(k,"resolution")) v=s.smf->resolution;
+	else return PL_domain_error("Unrecognised SMF information key",key);
+	return PL_unify_integer(val, v);
 }
 
-foreign_t get_events( term_t smf, term_t events)
+foreign_t get_duration( term_t smf, term_t timeline, term_t dur)
 {
 	smf_blob_t	s;
+	int tl;
 
-	if (!get_smf(smf,&s)) return FALSE;
-	smf_rewind(s.smf);
-	return read_events_until(s.smf,smf_get_length_seconds(s.smf),events);
+	return get_smf(smf,&s)
+		 && get_timeline(timeline,&tl)
+       && (tl==TL_PHYSICAL ? PL_unify_float(dur,smf_get_length_seconds(s.smf))
+                           : PL_unify_integer(dur,smf_get_length_pulses(s.smf)));
 }
 
-foreign_t get_events_between( term_t smf, term_t start, term_t end, term_t events)
+static int unify_tempo(term_t tempo, smf_tempo_t *t)
+{
+	term_t args=PL_new_term_refs(8);
+
+	return PL_put_integer(args+1, t->time_pulses)
+		 && PL_put_float(args+2, t->time_seconds)
+		 && PL_put_integer(args+3, t->microseconds_per_quarter_note)
+		 && PL_put_integer(args+4, t->numerator)
+		 && PL_put_integer(args+5, t->denominator)
+		 && PL_put_integer(args+6, t->clocks_per_click)
+		 && PL_put_integer(args+7, t->notes_per_note)
+		 && PL_cons_functor_v(args,f_tempo,args+1)
+		 && PL_unify(tempo,args);
+}
+
+foreign_t get_tempo( term_t smf, term_t timeline, term_t time, term_t tempo)
 {
 	smf_blob_t	s;
-	double	t1, t2;
-	if (!(get_smf(smf,&s) && PL_get_float(start,&t1) && PL_get_float(end,&t2))) 
-		return FALSE;
+	midi_time_t t;
+	int tl;
 
-	int rc=smf_seek_to_seconds(s.smf,t1);
-	// printf("seek, rc=%d.\n",rc);
-	return read_events_until(s.smf,t2,events);
+	return get_smf(smf,&s)
+		 && get_timeline(timeline,&tl)
+       && (tl==TL_PHYSICAL ? ( PL_get_float(time, &t.seconds)
+					                && unify_tempo(tempo,smf_get_tempo_by_seconds(s.smf,t.seconds)))
+                           : ( PL_get_integer(time, &t.pulses)
+										 && unify_tempo(tempo,smf_get_tempo_by_pulses(s.smf,t.pulses))));
+}
+
+
+static int get_events( unify_event_t unify_event, term_t smf, 
+							  term_t track_no, term_t timeline, term_t start, term_t end, 
+							  term_t events)
+{
+	smf_blob_t	   s;
+	int			   tno;
+	event_source_t src;
+	time_spec_t    ts;
+	int            tl;
+
+	if (  !get_smf(smf,&s) 
+		|| !PL_get_integer_ex(track_no,&tno)
+		|| !get_timeline(timeline,&tl)
+		|| !(tl==TL_PHYSICAL ? physical_time_spec(s.smf,start,end,&ts)
+		                     : metrical_time_spec(s.smf,start,end,&ts))
+		) return FALSE;
+
+	if (tno==0) {
+		src.next=smf_next_event;
+		src.src.smf=s.smf;
+	} else {
+		src.next=track_next_event;
+		src.src.track=smf_get_track_by_number(s.smf,tno);
+		if (src.src.track==NULL) return FALSE;
+	}
+
+	return read_events(&src, unify_event, &ts, events);
+}
+
+foreign_t get_events_without_track( term_t smf, term_t tno, term_t tl, term_t start, term_t end, term_t events) {
+	return get_events(unify_event_without_track, smf,tno, tl, start, end, events);
+}
+
+foreign_t get_events_with_track( term_t smf, term_t tno, term_t tl, term_t start, term_t end, term_t events) {
+	return get_events(unify_event_with_track, smf, tno, tl, start, end, events);
 }
 
 foreign_t add_events( term_t smf, term_t events)
