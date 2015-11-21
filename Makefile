@@ -21,5 +21,5 @@ clean:
 distclean: clean
 	rm -f $(SOBJ)
 
-
-
+install-me:
+	swipl -f none -g "pack_install(.,[upgrade(true)]), halt"
