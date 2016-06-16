@@ -27,6 +27,7 @@
 	,	smf_events/4
 	,	smf_events_between/4
    ,  smf_add_events/2
+   ,  smf_add_events/3
    ,  smf_property/2
    ,  smf_tempo/3
 	,	is_smf/1	
@@ -76,11 +77,23 @@ smf_events(Ref,Timeline,Events) :- smf_events(Ref,all,Timeline,Events).
 
 smf_events(Ref,all,Timeline,Events) :- 
    timeline(Timeline),
-   smf_events_without_track(Ref,0,Timeline,-1,-1,Events).
+   smf_events_without_track(Ref,0,Timeline,-1,-1,Events1),
+   (  Timeline=physical -> Events=Events1
+   ;  smf_info(Ref,ppqn,PPQN),
+      maplist(to_beats(PPQN),Events1,Events)
+   ).
 smf_events(Ref,track(T),Timeline,Events) :- 
    timeline(Timeline),
    smf_property(Ref,tracks(N)), between(1,N,T),
-   smf_events_without_track(Ref,T,Timeline,-1,-1,Events).
+   smf_events_without_track(Ref,T,Timeline,-1,-1,Events1),
+   (  Timeline=physical -> Events=Events1
+   ;  smf_info(Ref,ppqn,PPQN),
+      maplist(to_beats(PPQN),Events1,Events)
+   ).
+
+to_beats(PPQN,smf(X,A,B),smf(Y,A,B)) :- Y is X rdiv PPQN.
+to_beats(PPQN,smf(X,A,B,C),smf(Y,A,B,C)) :- Y is X rdiv PPQN.
+to_beats(PPQN,smf(X,A,B,C,D),smf(Y,A,B,C,D)) :- Y is X rdiv PPQN.
 
 %% smf_events_between( +Ref:smf_blob, +T1:nonneg, +T2:nonneg, -Events:list(smf_event)) is det.
 %
@@ -126,3 +139,5 @@ timeline(physical).
 		midi_send(O,176+Ch,32,LSB,T),
 		midi(O,T,prog(Ch,Prog)).
 */
+
+smf_add_events(SMF, Events) :- smf_add_events(SMF, physical, Events).

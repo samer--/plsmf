@@ -49,7 +49,7 @@ foreign_t get_description( term_t smf, term_t desc);
 foreign_t get_duration( term_t smf, term_t timeline, term_t dur);
 foreign_t get_events_with_track( term_t smf, term_t trackno, term_t timeline, term_t t1, term_t t2, term_t events);
 foreign_t get_events_without_track( term_t smf, term_t trackno, term_t timeline, term_t t1, term_t t2, term_t events);
-foreign_t add_events( term_t smf, term_t events);
+foreign_t add_events( term_t smf, term_t timeline, term_t events);
 foreign_t get_tempo( term_t smf, term_t timeline, term_t time, term_t tempo);
 
 int smf_release(atom_t a)
@@ -74,7 +74,7 @@ install_t install()
 	PL_register_foreign("smf_duration", 3, (void *)get_duration, 0);
 	PL_register_foreign("smf_events_with_track", 6, (void *)get_events_with_track, 0);
 	PL_register_foreign("smf_events_without_track", 6, (void *)get_events_without_track, 0);
-	PL_register_foreign("smf_add_events", 2, (void *)add_events, 0);
+	PL_register_foreign("smf_add_events", 3, (void *)add_events, 0);
 	PL_register_foreign("smf_tempo", 4, (void *)get_tempo, 0);
 	PL_register_foreign("is_smf",  1, (void *)is_smf, 0);
 
@@ -121,24 +121,11 @@ static int smf_error(const char *msg)
 	   && PL_raise_exception(ex);
 }
 	
-// throws a Prolog exception to signal type error
-static int type_error(term_t actual, const char *expected)
-{ 
-	term_t ex = PL_new_term_ref();
-
-  return PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
-								PL_FUNCTOR_CHARS, "type_error", 2,
-								  PL_CHARS, expected,
-								  PL_TERM, actual,
-								PL_VARIABLE)
-	   && PL_raise_exception(ex);
-}
-
 // get an unsigned byte from a numeric atom
 static int get_byte(term_t msg, unsigned char *m)
 {
    int x;
-   if (!PL_get_integer(msg,&x) || x<0 || x>255) return type_error(msg,"uint8");
+   if (!PL_get_integer(msg,&x) || x<0 || x>255) return PL_type_error("uint8",msg);
    *m = x;
    return TRUE;
 }
@@ -154,7 +141,7 @@ static int get_smf(term_t smf, smf_blob_t *p)
 	smf_blob_t *p1;
   
 	PL_get_blob(smf, (void **)&p1, &len, &type);
-	if (type != &smf_blob) { return type_error(smf, "smf_blob"); }
+	if (type != &smf_blob) { return PL_type_error("smf_blob",smf); }
 	else { *p=*p1; return TRUE; }
 } 
 
@@ -163,6 +150,14 @@ int chomp(const unsigned char status, unsigned short *size)
 	// We are expecting that the next byte in the packet is a status byte.
 	if (!(status & 0x80)) {*size=0; return 1;} // abort this packet
 
+	// event types:
+	// FF     metadata
+	// F8-FE  system_realtime IGNORE
+	// F0-F7  system_common   IGNORE
+	// F0     sysex           IGNORE
+	// end of track
+	// textual
+	//
 	// Determine the number of bytes in the MIDI message.
 	if      (status<0xC0) *size=3; 
 	else if (status<0xE0) *size=2;
@@ -173,8 +168,6 @@ int chomp(const unsigned char status, unsigned short *size)
 			case 0xF1: *size=3; return 1; // time code: ignore
 			case 0xF2: *size=3; break;
 			case 0xF3: *size=2; break;
-			case 0xF8: *size=3; return 1; // timing tick: ignore
-			case 0xFE: *size=1; return 1; // active sensing: ingore
 			default:   *size=1; 
 		}
 	}
@@ -304,29 +297,35 @@ static int read_events(event_source_t *src, unify_event_t unify_event, time_spec
 		unsigned short size;
 		if (chomp(ev->midi_buffer[0],&size)) continue;
 
-		/* term_t data0=PL_new_term_refs(2+size); */
-		/* term_t tail=PL_new_term_ref(); */
-		int i;
-
 		if (	!unify_event(ts->put_time, ev, size, event)
 			||	!PL_unify_list(events,head,events) 
 			|| !PL_unify(head,event)
 			) return FALSE;
-		/* if (  unify_event(ts->put_time, ev, size, head) */
-		/* 		&& PL_unify_list(events,head,events)) { */
-		/* 		/1* && PL_unify(head,event)) { *1/ */ 
-		/* 	events=tail; */ 
-		/* } else return FALSE; */
 	}
 	return PL_unify_nil(events);
 }
 
-static int add_events_to_track(term_t events, smf_track_t *track)
+static int add_event_seconds(smf_track_t *track, smf_event_t *event, term_t time) {
+	double t;
+	if (!PL_get_float(time,&t)) return FALSE;
+	smf_track_add_event_seconds(track,event,t);
+	return TRUE;
+}
+
+static int add_event_pulses(smf_track_t *track, smf_event_t *event, term_t time) {
+	int t;
+	if (!PL_get_integer(time,&t)) return FALSE;
+	smf_track_add_event_pulses(track,event,t);
+	return TRUE;
+}
+
+static int add_events_to_track(term_t events, int tl, smf_track_t *track)
 {
 	term_t head=PL_new_term_ref();
 	unsigned char msg, arg1, arg2;
-	double time;
+	int (*add_event_at)(smf_track_t *, smf_event_t *, term_t);
 	
+	add_event_at = tl==TL_PHYSICAL ? add_event_seconds : add_event_pulses;
 	events = PL_copy_term_ref(events);
 	while (PL_get_list(events,head,events)) {
       atom_t name;
@@ -335,15 +334,15 @@ static int add_events_to_track(term_t events, smf_track_t *track)
       if (PL_get_name_arity(head,&name,&arity) && arity==4 && !strcmp(PL_atom_chars(name),"smf")) {
 			term_t args=PL_new_term_refs(4);
 
-			if (   PL_get_arg(1,head,args+0) && PL_get_float(args+0,&time)
+			if (   PL_get_arg(1,head,args+0) 
              && PL_get_arg(2,head,args+1) && get_byte(args+1,&msg)
              && PL_get_arg(3,head,args+2) && get_byte(args+2,&arg1)
              && PL_get_arg(4,head,args+3) && get_byte(args+3,&arg2) ) {
 				smf_event_t *event=smf_event_new_from_bytes(msg,arg1,arg2);
 				if (event==NULL) return smf_error("smf_event_new_from_bytes");
-				smf_track_add_event_seconds(track,event,time);
+				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
 			} else return smf_error("midi event");
-		} else return type_error(head,"midi/4");
+		} else return PL_type_error("midi/4",head);
 	}
 	return TRUE;
 }
@@ -374,7 +373,7 @@ foreign_t delete_smf(term_t smf)
 	smf_blob_t *p1;
   
 	PL_get_blob(smf, (void **)&p1, &len, &type);
-	if (type != &smf_blob) { return type_error(smf, "smf_blob"); }
+	if (type != &smf_blob) { return PL_type_error("smf_blob",smf); }
 	smf_delete(p1->smf);
 	p1->smf=0;
 	return TRUE;
@@ -389,7 +388,7 @@ foreign_t open_read(term_t filename, term_t smf)
 		smfb.smf = smf_load(fn);
 		if (smfb.smf) return unify_smf(smf,&smfb);
 		else return io_error(fn,"read"); 
-	} else return type_error(filename,"text");
+	} else return PL_type_error("text",filename);
 }
 
 foreign_t write_smf(term_t smf, term_t filename) 
@@ -397,7 +396,7 @@ foreign_t write_smf(term_t smf, term_t filename)
 	char 			*fn;
 	smf_blob_t	s;
 
-	return (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING) || type_error(filename,"text"))
+	return (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING) || PL_type_error("text",filename))
        && get_smf(smf,&s)
 		 && (smf_save(s.smf,fn) ? io_error(fn,"write") : TRUE);
 }
@@ -508,16 +507,18 @@ foreign_t get_events_with_track( term_t smf, term_t tno, term_t tl, term_t start
 	return get_events(unify_event_with_track, smf, tno, tl, start, end, events);
 }
 
-foreign_t add_events( term_t smf, term_t events)
+foreign_t add_events( term_t smf, term_t timeline, term_t events)
 {
 	smf_blob_t	s;
 	smf_track_t *track;
+	int            tl;
 
 	if (!get_smf(smf,&s)) return FALSE;
+	if	(!get_timeline(timeline,&tl)) return FALSE;
 	track = smf_track_new();
 	if (track==NULL) return smf_error("smf_track_new");
 	smf_add_track(s.smf,track);
-	return add_events_to_track(events,track);
+	return add_events_to_track(events,tl,track);
 }
 
 foreign_t is_smf(term_t conn) 
