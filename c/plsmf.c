@@ -384,7 +384,7 @@ foreign_t open_read(term_t filename, term_t smf)
 	char 			*fn;
 	smf_blob_t	smfb;
 
-	if (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING)) {
+	if (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING | REP_UTF8)) {
 		smfb.smf = smf_load(fn);
 		if (smfb.smf) return unify_smf(smf,&smfb);
 		else return io_error(fn,"read"); 
@@ -396,7 +396,7 @@ foreign_t write_smf(term_t smf, term_t filename)
 	char 			*fn;
 	smf_blob_t	s;
 
-	return (PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING) || PL_type_error("text",filename))
+	return PL_get_chars(filename, &fn, CVT_ATOM | CVT_STRING | REP_UTF8)
        && get_smf(smf,&s)
 		 && (smf_save(s.smf,fn) ? io_error(fn,"write") : TRUE);
 }
