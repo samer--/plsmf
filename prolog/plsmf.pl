@@ -41,17 +41,28 @@
 :-	use_foreign_library(foreign(plsmf)).
 
 
+%% smf_new(-Ref:smf_blob) is det.
+%  Creats a new, empty SMF blob. Data structures will be released
+%  when the blob is garbage collected, or when smf_delete/1 is called.
+
+%% smf_delete(+Ref:smf_blob) is det.
+%  Release data structures associated with an SMF blob.
+
 %% smf_read( +File:filename, -Ref:smf_blob) is semidet.
 %
 %  Attempts to read standard MIDI file named File and sets Ref
 %  to an SMF blob atom which can be used to make further queries
 %  about the file.
 
+%% smf_write(+Ref:smf_blob, +File:filename) is det.
+%  Writes a MIDI file.
+
+
 %% smf_duration( +Ref:smf_blob, +Timeline:oneof([metrical,physical]), -Dur:nonneg) is det.
 %% smf_duration( +Ref:smf_blob, -Dur:nonneg) is det.
 %
 %  Returns the duration of the MIDI file in seconds (Timeline=physical) or
-%  pulses (Timeline=metrica). smf_read/2 assumes physical timeline.
+%  pulses (Timeline=metrical).
 smf_duration(Ref,Dur) :- smf_duration(Ref,physical,Dur).
 
 %% smf_description( +Ref:smf_blob, -Desc:atom) is det.
@@ -60,6 +71,9 @@ smf_duration(Ref,Dur) :- smf_duration(Ref,physical,Dur).
 %  MIDI file, inluding the number of tracks and timing information.
 
 %% smf_events( +Ref:smf_blob, -Events:list(smf_event)) is det.
+%% smf_events( +Ref:smf_blob, +TL:timeline, -Events:list(smf_event)) is det.
+%% smf_events( +Ref:smf_blob, -TL:timeline, -Events:list(smf_event)) is multi.
+%% smf_events( +Ref:smf_blob, Tracks:track_spec, +TL:timeline, -Events:list(smf_event)) is det.
 %
 %  Unifies Events with a list containing events in the MIDI file.
 %  Not all types of events are handled, but most are. Events are
@@ -67,10 +81,18 @@ smf_duration(Ref,Dur) :- smf_duration(Ref,physical,Dur).
 %  in the original MIDI data. The first argument of the smf
 %  functor is always the time in seconds.
 %
+%  ==
 %  smf_event ---> smf( nonneg, byte)
 %               ; smf( nonneg, byte, byte)
 %               ; smf( nonneg, byte, byte, byte).
 %
+%  timeline ---> physical  % time in seconds
+%              ; metrical. % time in quarter notes
+%
+%  track_spec ---> all; track(nat).
+%  ==
+%
+%  
 %  @see smf_events_between/4.
 smf_events(Ref,Events) :- smf_events(Ref,physical,Events).
 smf_events(Ref,Timeline,Events) :- smf_events(Ref,all,Timeline,Events).
@@ -109,11 +131,30 @@ smf_events_between(Ref,T1,T2,Events) :-
 %  by smf_read/2.
 
 
+%% smf_property(+Ref:smf_blob, ?Prop:smf_prop) is multi.
+%  Queries properties of a MIDI score:
+%  ==
+%  smf_prop ---> ppqn(nat)   % pulses per quarter note
+%              ; fps(nat)    % frames per second
+%              ; tracks(nat) % number of tracks
+%              ; resolution(number).
+%  ===
 smf_property(Ref,Prop) :-
    member(Key, [ppqn, fps, tracks, resolution]),
    Prop =.. [Key,Val],
    smf_info(Ref,Key,Val).
 
+
+%% smf_tempo(+Ref:smf_blob, +T:time_spec, -P:tempo_spec) is nondet.
+%  Gets the tempo at the given time in a variety of forms.
+%  ==
+%  time_spec ---> seconds(nonneg); pulses(nat).
+%  tempo_spec ---> time(timeline, number)
+%                ; crochet_duration(nonneg)
+%                ; crochets_per_minute(nonneg)
+%                ; time_signature(timesig).
+%  timesig ---> nat/nat.
+%  ==
 smf_tempo(Ref,seconds(T),Prop) :- smf_tempo(Ref,physical,T,Tempo), tempo_property(Tempo,Prop).
 smf_tempo(Ref,pulses(T),Prop)  :- smf_tempo(Ref,metrical,T,Tempo), tempo_property(Tempo,Prop).
 
@@ -140,4 +181,9 @@ timeline(physical).
 		midi(O,T,prog(Ch,Prog)).
 */
 
+
+%% smf_add_events(+Ref:smf_blob, +TL:timeline, +Events:list(smf_event)) is det.
+%% smf_add_events(+Ref:smf_blob, +Events:list(smf_event)) is det.
+%
+%  Adds a new track containing the given events.
 smf_add_events(SMF, Events) :- smf_add_events(SMF, physical, Events).
