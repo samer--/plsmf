@@ -15,7 +15,7 @@
  */
 	  
 :- module(plsmf,
-	[	smf_new/1
+	[	smf_new/2
    ,  smf_delete/1
    ,  smf_read/2		
    ,  smf_write/2
@@ -35,13 +35,25 @@
 	
 /** <module> Standard MIDI file reading
 
+Types used below:
+==
+smf_event ---> msg(nonneg, byte)
+             ; msg(nonneg, byte, byte)
+             ; msg(nonneg, byte, byte, byte)
+             ; meta(nonneg, byte, byte, list(byte)).
+
+timeline ---> physical  % time in seconds
+            ; metrical. % time in quarter notes
+
+==
+
 @author Samer Abdallah
 */
 
 :-	use_foreign_library(foreign(plsmf)).
 
 
-%% smf_new(-Ref:smf_blob) is det.
+%% smf_new(+PPQN:natural, -Ref:smf_blob) is det.
 %  Creats a new, empty SMF blob. Data structures will be released
 %  when the blob is garbage collected, or when smf_delete/1 is called.
 
@@ -78,17 +90,9 @@ smf_duration(Ref,Dur) :- smf_duration(Ref,physical,Dur).
 %  Unifies Events with a list containing events in the MIDI file.
 %  Not all types of events are handled, but most are. Events are
 %  returned in a low-level numeric format containing the bytes
-%  in the original MIDI data. The first argument of the smf
-%  functor is always the time in seconds.
-%
+%  in the original MIDI data. See module header for definition of
+%  type =|smf_event|=.
 %  ==
-%  smf_event ---> smf( nonneg, byte)
-%               ; smf( nonneg, byte, byte)
-%               ; smf( nonneg, byte, byte, byte).
-%
-%  timeline ---> physical  % time in seconds
-%              ; metrical. % time in quarter notes
-%
 %  track_spec ---> all; track(nat).
 %  ==
 %
@@ -113,9 +117,10 @@ smf_events(Ref,track(T),Timeline,Events) :-
       maplist(to_beats(PPQN),Events1,Events)
    ).
 
-to_beats(PPQN,smf(X,A,B),smf(Y,A,B)) :- Y is X rdiv PPQN.
-to_beats(PPQN,smf(X,A,B,C),smf(Y,A,B,C)) :- Y is X rdiv PPQN.
-to_beats(PPQN,smf(X,A,B,C,D),smf(Y,A,B,C,D)) :- Y is X rdiv PPQN.
+to_beats(PPQN,msg(X,A,B),msg(Y,A,B)) :- Y is X rdiv PPQN.
+to_beats(PPQN,msg(X,A,B,C),msg(Y,A,B,C)) :- Y is X rdiv PPQN.
+to_beats(PPQN,msg(X,A,B,C,D),msg(Y,A,B,C,D)) :- Y is X rdiv PPQN.
+to_beats(PPQN,meta(X,A,B,C),meta(Y,A,B,C)) :- Y is X rdiv PPQN.
 
 %% smf_events_between( +Ref:smf_blob, +T1:nonneg, +T2:nonneg, -Events:list(smf_event)) is det.
 %
@@ -166,20 +171,6 @@ tempo_property(smf_tempo(_,_,_,N,D,_,_),time_signature(N/D)).
 
 timeline(metrical).
 timeline(physical).
-/*
-	MIDI derived event types:
-
-	midi(O,T,msg(A,B,C)) :- midi_send(O,A,B,C,T).
-	midi(O,T,noteon(Ch,NN,V)) :- midi_send(O,144+Ch,NN,V,T).
-	midi(O,T,noteoff(Ch,NN)) :- midi_send(O,128+Ch,NN,0,T).
-	midi(O,T,prog(Ch,Prog)) :- midi_send(O,192+Ch,Prog,Prog,T).
-	midi(O,T,prog(Ch,Prog,Bank)) :-
-		MSB is Bank // 128,
-		LSB is Bank mod 128,
-		midi_send(O,176+Ch,0,MSB,T),
-		midi_send(O,176+Ch,32,LSB,T),
-		midi(O,T,prog(Ch,Prog)).
-*/
 
 
 %% smf_add_events(+Ref:smf_blob, +TL:timeline, +Events:list(smf_event)) is det.

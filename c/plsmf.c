@@ -41,7 +41,7 @@ install_t install();
 
 foreign_t open_read( term_t filename, term_t smf); 
 foreign_t write_smf( term_t smf, term_t filename); 
-foreign_t new_smf( term_t smf); 
+foreign_t new_smf( term_t ppqn, term_t smf); 
 foreign_t delete_smf( term_t smf); 
 foreign_t is_smf( term_t conn); 
 foreign_t get_info( term_t smf, term_t key, term_t val);
@@ -65,7 +65,7 @@ int smf_release(atom_t a)
 
 install_t install() 
 { 
-	PL_register_foreign("smf_new",  1, (void *)new_smf, 0);
+	PL_register_foreign("smf_new",  2, (void *)new_smf, 0);
 	PL_register_foreign("smf_delete", 1, (void *)delete_smf, 0);
 	PL_register_foreign("smf_read",  2, (void *)open_read, 0);
 	PL_register_foreign("smf_write",  2, (void *)write_smf, 0);
@@ -319,22 +319,49 @@ static int add_event_pulses(smf_track_t *track, smf_event_t *event, term_t time)
 	return TRUE;
 }
 
+int get_list_bytes(term_t list, unsigned char *vals)
+{
+   term_t  head=PL_new_term_ref();
+   int      n;
+
+   // copy term ref so as not to modify original
+   list=PL_copy_term_ref(list);
+   for (n=0;PL_get_list(list,head,list);n++) {
+         if (!get_byte(head,&vals[n])) return FALSE;
+   }
+   if (!PL_get_nil(list)) return FALSE;
+   return TRUE;
+}
+
+int memory_error(size_t amount)
+{
+   term_t ex = PL_new_term_ref();
+   int rc = PL_unify_term(ex, PL_FUNCTOR_CHARS, "error", 2,
+            PL_FUNCTOR_CHARS, "memory_error", 1,
+              PL_INTEGER, amount,
+            PL_VARIABLE);
+
+   return rc && PL_raise_exception(ex);
+}
+
 static int add_events_to_track(term_t events, int tl, smf_track_t *track)
 {
 	term_t head=PL_new_term_ref();
-	unsigned char msg, arg1, arg2;
 	int (*add_event_at)(smf_track_t *, smf_event_t *, term_t);
 	
 	add_event_at = tl==TL_PHYSICAL ? add_event_seconds : add_event_pulses;
+
 	events = PL_copy_term_ref(events);
 	while (PL_get_list(events,head,events)) {
       atom_t name;
       int    arity;
 
-      if (PL_get_name_arity(head,&name,&arity) && arity==4 && !strcmp(PL_atom_chars(name),"smf")) {
+		if (!PL_get_name_arity(head, &name, &arity)) return PL_type_error("smf_event", head);
+      if (arity==4 && !strcmp(PL_atom_chars(name),"msg")) {
 			term_t args=PL_new_term_refs(4);
+			unsigned char msg, arg1, arg2;
 
-			if (   PL_get_arg(1,head,args+0) 
+			if (   PL_get_arg(1,head,args+0) // time 
              && PL_get_arg(2,head,args+1) && get_byte(args+1,&msg)
              && PL_get_arg(3,head,args+2) && get_byte(args+2,&arg1)
              && PL_get_arg(4,head,args+3) && get_byte(args+3,&arg2) ) {
@@ -342,7 +369,27 @@ static int add_events_to_track(term_t events, int tl, smf_track_t *track)
 				if (event==NULL) return smf_error("smf_event_new_from_bytes");
 				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
 			} else return smf_error("midi event");
-		} else return PL_type_error("midi/4",head);
+		} else if (arity==4 && !strcmp(PL_atom_chars(name), "meta")) {
+			term_t args=PL_new_term_refs(4);
+			unsigned char type, num_bytes;
+
+			if (   PL_get_arg(1,head,args+0) // time 
+             && PL_get_arg(2,head,args+1) && get_byte(args+1,&type)
+             && PL_get_arg(3,head,args+2) && get_byte(args+2,&num_bytes)
+             && PL_get_arg(4,head,args+3) ) {
+
+				unsigned char *buf = malloc(3+num_bytes);
+				if (!buf) return memory_error(3+num_bytes);
+				if (!get_list_bytes(args+3, buf+3)) { free(buf); return FALSE; }
+				buf[0] = 0xFF;
+				buf[1] = type;
+				buf[2] = num_bytes;
+				smf_event_t *event=smf_event_new_from_pointer((void *)buf, 3+num_bytes);
+				free(buf);
+				if (event==NULL) return smf_error("smf_event_new_from_pointer");
+				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
+			} else return smf_error("meta event");
+		} else return PL_type_error("smf_event", head);
 	}
 	return TRUE;
 }
@@ -355,16 +402,24 @@ static int get_timeline(term_t timeline, int *x) {
 	else                     return PL_domain_error("metrical or physical",timeline);
 	return TRUE;
 }
+
+
 // ------- Foreign interface predicates
 
-foreign_t new_smf(term_t smf) 
+foreign_t new_smf(term_t ppqn, term_t smf) 
 { 
 	smf_blob_t	smfb;
+	int         _ppqn, _tempo;
 
+	if (!PL_get_integer_ex(ppqn, &_ppqn)) return FALSE;
 	smfb.smf = smf_new();
-	if (smfb.smf) return unify_smf(smf,&smfb);
-	else return smf_error("smf_new"); 
+	if (!smfb.smf) return smf_error("smf_new");
+	if (smf_set_ppqn(smfb.smf, _ppqn)) { smf_delete(smfb.smf); return smf_error("smf_set_ppqn"); }
+	int rc = unify_smf(smf,&smfb);
+	if (!rc) smf_delete(smfb.smf);
+	return rc;
 }
+
 
 foreign_t delete_smf(term_t smf) 
 { 
