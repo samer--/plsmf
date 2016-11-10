@@ -33,7 +33,7 @@
 	,	is_smf/1	
 	]).
 	
-/** <module> Standard MIDI file reading
+/** <module> Standard MIDI file reading and writing
 
 Types used below:
 ==
