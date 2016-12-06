@@ -374,6 +374,18 @@ static int add_events_to_track(term_t events, int tl, smf_track_t *track)
 				if (event==NULL) return smf_error("smf_event_new_from_bytes");
 				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
 			} else return smf_error("midi event");
+		} else if (arity==3 && !strcmp(PL_atom_chars(name),"msg")) {
+			term_t args=PL_new_term_refs(3);
+			unsigned char msg, arg1;
+
+			if (   PL_get_arg(1,head,args+0) // time 
+             && PL_get_arg(2,head,args+1) && get_byte(args+1,&msg)
+             && PL_get_arg(3,head,args+2) && get_byte(args+2,&arg1) ) {
+
+				smf_event_t *event=smf_event_new_from_bytes(msg,arg1,-1);
+				if (event==NULL) return smf_error("smf_event_new_from_bytes");
+				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
+			} else return smf_error("midi event");
 		} else if (arity==4 && !strcmp(PL_atom_chars(name), "meta")) {
 			term_t args=PL_new_term_refs(4);
 			unsigned char type, num_bytes;
