@@ -40,11 +40,11 @@ Types used below:
 smf_event ---> msg(nonneg, byte)
              ; msg(nonneg, byte, byte)
              ; msg(nonneg, byte, byte, byte)
+             ; text(byte, text)
              ; meta(nonneg, byte, byte, list(byte)).
 
 timeline ---> physical  % time in seconds
             ; metrical. % time in quarter notes
-
 ==
 
 @author Samer Abdallah
