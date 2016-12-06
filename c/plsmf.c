@@ -344,6 +344,10 @@ int memory_error(size_t amount)
    return rc && PL_raise_exception(ex);
 }
 
+static int get_utf8_string(term_t t, char **s) {
+  return PL_get_chars(t, s, CVT_ATOM | CVT_STRING | CVT_LIST | BUF_RING | REP_UTF8);
+}
+
 static int add_events_to_track(term_t events, int tl, smf_track_t *track)
 {
 	term_t head=PL_new_term_ref();
@@ -365,6 +369,7 @@ static int add_events_to_track(term_t events, int tl, smf_track_t *track)
              && PL_get_arg(2,head,args+1) && get_byte(args+1,&msg)
              && PL_get_arg(3,head,args+2) && get_byte(args+2,&arg1)
              && PL_get_arg(4,head,args+3) && get_byte(args+3,&arg2) ) {
+
 				smf_event_t *event=smf_event_new_from_bytes(msg,arg1,arg2);
 				if (event==NULL) return smf_error("smf_event_new_from_bytes");
 				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
@@ -389,6 +394,19 @@ static int add_events_to_track(term_t events, int tl, smf_track_t *track)
 				if (event==NULL) return smf_error("smf_event_new_from_pointer");
 				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
 			} else return smf_error("meta event");
+		} else if (arity==3 && !strcmp(PL_atom_chars(name), "text")) {
+			term_t args=PL_new_term_refs(3);
+			unsigned char type, num_bytes;	
+			char *text;
+
+			if (   PL_get_arg(1,head,args+0) // time 
+             && PL_get_arg(2,head,args+1) && get_byte(args+1,&type)
+             && PL_get_arg(3,head,args+2) && get_utf8_string(args+2,&text)) {
+
+				smf_event_t *event=smf_event_new_textual(type, text);
+				if (event==NULL) return smf_error("smf_event_new_textual");
+				if (!add_event_at(track,event,args+0)) return smf_error("time spec");
+			} else return smf_error("textual event");
 		} else return PL_type_error("smf_event", head);
 	}
 	return TRUE;
